@@ -1276,6 +1276,7 @@ class JukeboxLayerStack(nn.Module):
                     hidden_states, last_encoder_hidden_states=last_encoder_hidden_states, sample=sample
                 )
             else:
+                print_size(hidden_states, "hidden_states")
                 hidden_states = attn_layer(hidden_states, last_encoder_hidden_states=None, sample=sample)
             # if attn_layer.attn.record_attn:
             if False:  # VRAM: Let's not cache attn weights
@@ -1572,7 +1573,6 @@ class JukeboxConditionalAutoregressive(nn.Module):
                 del conds_prime
                 if not get_preds:
                     del cond_prime
-                print("get_preds ", get_preds)
                 torch.cuda.empty_cache()  # VRAM: Sanity check
                 x_prime = self.transformer(x_prime, last_encoder_hidden_states=last_encoder_hidden_states, sample=True)
 
@@ -1583,6 +1583,7 @@ class JukeboxConditionalAutoregressive(nn.Module):
                     x_primes.append(x_prime)
                 else:
                     del x_prime
+                self.transformer.del_cache()  # VRAM: Can't afford to keep the cache
 
             if get_preds:
                 x_prime = torch.cat(x_primes, dim=1)
@@ -2415,7 +2416,6 @@ class JukeboxModel(JukeboxPreTrainedModel):
                 refresh=True,
             )
 
-            print_size(music_tokens, "music_tokens")
             tokens_i = prior.sample(
                 n_samples=music_tokens_i.shape[0],
                 music_tokens=music_tokens_i,
@@ -2425,7 +2425,6 @@ class JukeboxModel(JukeboxPreTrainedModel):
             )
 
             tokens.append(tokens_i)
-        print("Finished sampling window")
         sampled_tokens = torch.cat(tokens, dim=0)
 
         # Update music_tokens with new sample
@@ -2438,16 +2437,13 @@ class JukeboxModel(JukeboxPreTrainedModel):
         self, music_tokens, labels, offset, sampling_kwargs, level, total_length, hop_length, max_batch_size
     ):
         if total_length >= self.priors[level].n_ctx:
-            print("sampling single window")
             iterator = get_starts(total_length, self.priors[level].n_ctx, hop_length)
             for start in iterator:
-                print_size(music_tokens, "music_tokens")
                 music_tokens = self.sample_single_window(
                     music_tokens, labels, offset, sampling_kwargs, level, start, max_batch_size
                 )
 
         else:
-            print("sampling partial window")
             music_tokens = self.sample_partial_window(
                 music_tokens, labels, offset, sampling_kwargs, level, total_length, max_batch_size
             )
