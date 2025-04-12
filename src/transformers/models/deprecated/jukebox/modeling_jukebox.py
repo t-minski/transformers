@@ -2438,6 +2438,7 @@ class JukeboxModel(JukeboxPreTrainedModel):
         self, music_tokens, labels, offset, sampling_kwargs, level, total_length, hop_length, max_batch_size
     ):
         if total_length >= self.priors[level].n_ctx:
+            print("sampling single window")
             iterator = get_starts(total_length, self.priors[level].n_ctx, hop_length)
             for start in iterator:
                 print_size(music_tokens, "music_tokens")
@@ -2446,6 +2447,7 @@ class JukeboxModel(JukeboxPreTrainedModel):
                 )
 
         else:
+            print("sampling partial window")
             music_tokens = self.sample_partial_window(
                 music_tokens, labels, offset, sampling_kwargs, level, total_length, max_batch_size
             )
