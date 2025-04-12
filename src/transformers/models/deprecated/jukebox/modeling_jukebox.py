@@ -33,6 +33,17 @@ from .configuration_jukebox import ATTENTION_PATTERNS, JukeboxConfig, JukeboxPri
 
 logger = logging.get_logger(__name__)
 
+from humanize import naturalsize
+def print_size(tensor, variable_name):
+    """Print the size of a tensor."""
+    if not isinstance(tensor, list):
+        tensor = [tensor]
+    size = 0
+    for i, tensor in enumerate(tensor):
+        size += tensor.nelement() * tensor.element_size()
+
+    print(f"{variable_name}: {naturalsize(size)}")
+
 
 def filter_logits(logits, top_k=0, top_p=0.0, filter_value=-float("Inf")):
     """
@@ -191,11 +202,11 @@ def get_mask(mask, query_length, key_value_length, blocks, spread, device, sampl
     offset = sample_t - query_length if sample else max(key_value_length - query_length, 0)
     if mask == "autoregressive":
         # Masked dense
-        mask = torch.ones(query_length, key_value_length, device=device).tril(offset)
+        mask = torch.ones(query_length, key_value_length, device=device, dtype=torch.float16).tril(offset)
     elif mask == "summary":
         # Masked summary
-        mask = torch.ones(query_length, query_length, device=device).tril()
-        mask = torch.ones(query_length, query_length, device=device).tril()
+        mask = torch.ones(query_length, query_length, device=device, dtype=torch.float16).tril()
+        mask = torch.ones(query_length, query_length, device=device, dtype=torch.float16).tril()
         mask = mask.view(query_length, blocks, query_length // blocks)[:, :-1, -key_value_length // blocks :]
         mask = (
             torch.nn.functional.pad(
@@ -207,7 +218,7 @@ def get_mask(mask, query_length, key_value_length, blocks, spread, device, sampl
             .view(query_length, key_value_length)
         )
     elif mask == "prime":
-        mask = torch.ones(query_length, key_value_length, device=device).tril(offset)
+        mask = torch.ones(query_length, key_value_length, device=device, dtype=torch.float16).tril(offset)
     return mask.view(1, 1, query_length, key_value_length)
 
 
@@ -878,7 +889,7 @@ class JukeboxAttention(nn.Module):
             attention_weight = torch.matmul(query_states, key_states)
             attention_weight.mul_(scale * scale)
         attn_weight_type = attention_weight.dtype
-        attention_weight = attention_weight.float()
+        # attention_weight = attention_weight.float() --> VRAM: We don't need float precision
         if self.mask:
             # Generate appropriate mask to mask out all positions before current
             # Might take up lot of memory for dense, so can cache it
@@ -1266,7 +1277,8 @@ class JukeboxLayerStack(nn.Module):
                 )
             else:
                 hidden_states = attn_layer(hidden_states, last_encoder_hidden_states=None, sample=sample)
-            if attn_layer.attn.record_attn:
+            # if attn_layer.attn.record_attn:
+            if False:  # VRAM: Let's not cache attn weights
                 self.saved_attn_weights.append(attn_layer.attn.c_attn.weight)
         return hidden_states
 
@@ -1485,6 +1497,7 @@ class JukeboxConditionalAutoregressive(nn.Module):
                 # Sample and replace hidden_states
                 tokens = torch.distributions.Categorical(logits=hidden_states).sample()
                 sampled_tokens.append(tokens.clone())
+                self.transformer.del_cache()  # VRAM: Can't afford to keep the cache
 
             del tokens
             self.transformer.del_cache()
@@ -1559,6 +1572,8 @@ class JukeboxConditionalAutoregressive(nn.Module):
                 del conds_prime
                 if not get_preds:
                     del cond_prime
+                print("get_preds ", get_preds)
+                torch.cuda.empty_cache()  # VRAM: Sanity check
                 x_prime = self.transformer(x_prime, last_encoder_hidden_states=last_encoder_hidden_states, sample=True)
 
                 if get_preds:
@@ -1602,6 +1617,7 @@ class JukeboxConditionalAutoregressive(nn.Module):
                 music_tokens = torch.distributions.Categorical(logits=hidden_states).sample()
                 sampled_audio.append(music_tokens.clone())
                 input_tokens = music_tokens
+                self.transformer.del_cache()  # VRAM: Can't afford to keep the cache
 
             del input_tokens, music_tokens
             self.transformer.del_cache()
@@ -2390,6 +2406,7 @@ class JukeboxModel(JukeboxPreTrainedModel):
         metadata_list = self.split_batch(metadata, n_samples, max_batch_size)
         tokens = []
         iterator = tqdm(zip(music_tokens_list, music_tokens_conds_list, metadata_list), leave=False)
+        # TODO: Check for Peaks in VRAM here
         for music_tokens_i, music_tokens_conds_i, metadata_i in iterator:
             name = ["Ancestral", "Primed"][music_tokens_i.shape[1] == 0]
             iterator.set_description(
@@ -2397,6 +2414,8 @@ class JukeboxModel(JukeboxPreTrainedModel):
                 f" {self.total_length // prior.raw_to_tokens}",
                 refresh=True,
             )
+
+            print_size(music_tokens, "music_tokens")
             tokens_i = prior.sample(
                 n_samples=music_tokens_i.shape[0],
                 music_tokens=music_tokens_i,
@@ -2404,7 +2423,9 @@ class JukeboxModel(JukeboxPreTrainedModel):
                 metadata=metadata_i,
                 **sampling_kwargs,
             )
+
             tokens.append(tokens_i)
+        print("Finished sampling window")
         sampled_tokens = torch.cat(tokens, dim=0)
 
         # Update music_tokens with new sample
@@ -2419,6 +2440,7 @@ class JukeboxModel(JukeboxPreTrainedModel):
         if total_length >= self.priors[level].n_ctx:
             iterator = get_starts(total_length, self.priors[level].n_ctx, hop_length)
             for start in iterator:
+                print_size(music_tokens, "music_tokens")
                 music_tokens = self.sample_single_window(
                     music_tokens, labels, offset, sampling_kwargs, level, start, max_batch_size
                 )
