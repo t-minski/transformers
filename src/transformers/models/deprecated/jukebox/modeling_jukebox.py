@@ -1276,7 +1276,6 @@ class JukeboxLayerStack(nn.Module):
                     hidden_states, last_encoder_hidden_states=last_encoder_hidden_states, sample=sample
                 )
             else:
-                print_size(hidden_states, "hidden_states")
                 hidden_states = attn_layer(hidden_states, last_encoder_hidden_states=None, sample=sample)
             # if attn_layer.attn.record_attn:
             if False:  # VRAM: Let's not cache attn weights
